@@ -1,183 +1,242 @@
 var express = require('express'),
-    User = require('../models/user-model'),
     router = express.Router(),
-    uid = require('rand-token').uid;
+    path = require('path'),
+    multiparty = require('multiparty'),
+    cloudinary = require('cloudinary'),
+    uid = require('uid'),
+    User = require('../models/user-model');
 
-router.route('/users')
-    .get(function (req, res) {
-        User.find(function (err, users) {
-            err && res.send(err);
-
-            res.json(users);
-        })
-    })
-    .post(function (req, res) {
-        var username = req.body.username,
-            password = req.body.password,
-            email = req.body.email;
-
-        if (!(username && password && email)) {
-            res.status(400).json({ message: 'Bad data' });
-        }
-
-        var user = new User({
-            username: username,
-            password: password,
-            email: email,
-            firstName: req.body.firstName || '',
-            lastName: req.body.lastName || ''
-        });
-
-        user.save(function (err) {
-            if (err) {
-                res.status(500).send({ message: 'Internal error with save user' });
-            }
-
-            res.json({ message: 'Ok', id: user._id });
-        });
-    });
-
-router.route('/users/:id')
-    .get(function (req, res) {
-        User.findById(req.params.id, function (err, user) {
-            if (err) {
-                res.status(500).send({ message: 'Internal error with finding user' });
-            }
-
-            res.json(user);
-        });
-    })
-    .put(function (req, res) {
-        User.findById(req.params.id, function (err, user) {
-            if (err) {
-                res.status(500).send({ message: 'Internal error with finding user' });
-            }
-
-            user.save(function (err) {
-                if (err) {
-                    res.status(500).send({ message: 'Internal error with save user' });
-                }
-
-                res.json({ message: 'Ok', id: user._id });
-            });
-        });
-    })
-    .delete(function (req, res) {
-        User.findById(req.params.id, function(err, user) {
-            if (err) {
-                res.status(500).send({ message: 'Internal error with finding user' });
-            }
-
-            user.remove(function(err) {
-                if (err) {
-                    res.status(500).send({ message: 'Internal error with deleting user' });
-                }
-
-                res.json({ message: 'User successfully removed' });
-            });
-        });
-    });
-
-router.route('/login').post(function (req, res) {
-    User.findOne({ username: req.body.username, password: req.body.password }, function (err, user) {
-        if (err) {
-            res.sendStatus(500);
-        }
-
-        if (user) {
-            user.token = uid(16);
-
-            user.save(function (err, user) {
-                if (err) {
-                    res.sendStatus(500);
-                }
-
-                res.json({
-                    token: user.token,
-                    username: user.username,
-                    email: user.email,
-                    firstName: user.firstName,
-                    lastName: user.lastName,
-                    level: user.level,
-                    createdAt: user.createdAt,
-                    updatedAt: user.updatedAt
-                });
-            });
-        }
-        else {
-            res.status(404).send({ message: 'Bad credentials' });
-        }
-    });
+cloudinary.config({
+    cloud_name: 'dz6xtu1hj',
+    api_key: '933492627497273',
+    api_secret: 'QSfpwFxgACzH0kbKQPe-3dRrOaI'
 });
 
-router.route('/loginByToken').post(function (req, res) {
-    User.findOne({token: req.body.token}, function (err, user) {
-        if (err) {
-            res.sendStatus(500);
-        }
+//-------------------- COMMON METHODS START --------------------------------------------------------
 
-        if (user) {
-            res.json({
-                token: user.token,
-                username: user.username,
-                email: user.email,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                level: user.level,
-                createdAt: user.createdAt,
-                updatedAt: user.updatedAt,
-                id: user._id
-            });
-        }
-        else {
-            res.status(404).send({message: 'Bad credentials'});
-        }
+/**
+ * Send successful message to client
+ * @param req
+ * @param res
+ */
+var sendOk = function (req, res) {
+    res.json({ message: 'Ok' });
+};
+
+/**
+ * Send user to client
+ * @param req
+ * @param res
+ */
+var sendUser = function (req, res) {
+    res.send(req.user.getPublicFields());
+};
+
+//-------------------- COMMON METHODS END --------------------------------------------------------
+
+
+
+//-------------------- REGISTER METHODS START ----------------------------------------------------
+
+/**
+ * Parse user data from request
+ * @param req
+ * @param res
+ * @param next
+ */
+var parseFormData = function (req, res, next) {
+    var form = new multiparty.Form({
+        uploadDir: path.dirname(process.mainModule.filename) + '/user_files'
     });
-});
 
-router.route('/register').post(function (req, res) {
-    var username = req.body.username,
-        password = req.body.password,
-        email = req.body.email;
+    form.parse(req, function(err, fields, files) {
+        var user = {};
 
-    if (!(username && password && email)) {
-        res.status(400).json({ message: 'Bad data' });
+        err && res.send(err);
+
+        Object.keys(fields).forEach(function (key) {
+            user[key] = fields[key][0];
+        });
+
+        user.avatar = files.avatar[0];
+
+        req.user = user;
+
+        next();
+    });
+};
+
+/**
+ * Save avatar on CDN using user data
+ * @param req
+ * @param res
+ * @param next
+ */
+var uploadAvatarToCDN = function (req, res, next) {
+    var user = req.user,
+        crop = null;
+
+    if (user.avatar) {
+        crop = {
+            x: user.avatar_x || 0,
+            y: user.avatar_y || 0,
+            width: user.avatar_w || 100,
+            heigth: user.avatar_h || 100,
+            crop: 'crop'
+        };
+
+        delete user.avatar_x;
+        delete user.avatar_y;
+        delete user.avatar_w;
+        delete user.avatar_h;
+
+        cloudinary.uploader.upload(user.avatar.path, function (result) {
+            req.user.avatar = result;
+
+            next();
+        }, crop);
+    } else {
+        next();
     }
+};
 
-    var user = new User({
-        username: username,
-        password: password,
-        email: email,
-        firstName: req.body.firstName || '',
-        lastName: req.body.lastName || '',
-        token: uid(16)
-    });
+/**
+ * Save new user to database
+ * @param req
+ * @param res
+ * @param next
+ */
+var saveNewUser = function (req, res, next) {
+    var user = new User(req.user);
 
     user.save(function (err) {
-        if (err) {
-            res.status(500).send({ message: 'Internal error with save user' });
+        err ? res.status(500).send(err) : next();
+    });
+};
+
+/**
+ * Listen register request
+ */
+router.route('/register').post(parseFormData, uploadAvatarToCDN, saveNewUser, sendOk);
+
+//-------------------- REGISTER METHODS END ----------------------------------------------------
+
+
+//-------------------- LOGIN METHODS START -----------------------------------------------------
+
+/**
+ * Find user using credentials from request
+ * @param req
+ * @param res
+ * @param next
+ */
+var findUserByCreds = function (req, res, next) {
+    var username = req.body.username,
+        password = req.body.password;
+
+    User.findOne({ username: username, password: password }, function (err, user) {
+        if (err || !user) {
+            return res.status(500).send({ message: 'User not found' });
         }
 
-        res.json({
-            message: 'User is logged in',
-            username: username,
-            token: user.token
-        });
+        req.user = user;
+
+        next();
     });
-});
+};
 
-router.route('/logout').post(function (req, res) {
-    User.findOne({ token: req.body.token }, function (err, user) {
-        err && res.sendStatus(500);
+/**
+ * If user haven't got token, save it
+ * @param req
+ * @param res
+ * @param next
+ */
+var saveTokenIfNeed = function (req, res, next) {
+    var user = req.user;
 
-        user.token = '';
+    if (!user.token) {
+        user.token = uid(16);
 
-        user.save(function (err) {
-            err && res.sendStatus(500);
+        user.save(function (err, user) {
+            if (err) {
+                return res.status(500).send({ message: 'Internal server error' })
+            }
 
-            res.json({ message: 'User was logged out' });
+            req.user = user;
+
+            next();
         });
-    })
-});
+    } else {
+        next();
+    }
+};
+
+/**
+ * Listen login request
+ */
+router.route('/login').post(findUserByCreds, saveTokenIfNeed, sendUser);
+
+//-------------------- LOGIN METHODS END -----------------------------------------------------
+
+//-------------------- TOKEN METHODS START (LOGOUT AND LOGIN BY TOKEN) -----------------------
+
+/**
+ * Find user by token from request
+ * @param req
+ * @param res
+ * @param next
+ */
+var findUserByToken = function (req, res, next) {
+    var token = req.body.token;
+
+    if (!token) {
+        return res.status(500).send({ message: 'Bad token' });
+    }
+
+    User.findOne({ token: token }, function (err, user) {
+        if (err || !user) {
+            return res.status(500).send({ message: 'User not found' });
+        }
+
+        req.user = user;
+
+        next();
+    });
+};
+
+/**
+ * Listen login by token request
+ */
+router.route('/loginByToken').post(findUserByToken, sendUser);
+
+/**
+ * Drop user token
+ * @param req
+ * @param res
+ * @param next
+ */
+var saveEmptyToken = function (req, res, next) {
+    var user = req.user;
+
+    user.token = '';
+
+    user.save(function (err, user) {
+        if (err) {
+            return res.status(500).send({ message: 'Internal server error' })
+        }
+
+        req.user = user;
+        next();
+    });
+};
+
+/**
+ * Listen logout request
+ */
+router.route('/logout').post(findUserByToken, saveEmptyToken, sendOk);
+
+
+//-------------------- TOKEN METHODS END (LOGOUT AND LOGIN BY TOKEN) -----------------------
+
 
 module.exports = router;

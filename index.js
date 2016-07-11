@@ -1,23 +1,27 @@
-var express = require('express'),
-    app = express(),
-    port = 4000,
-    mongoose = require('mongoose'),
-    bodyParser = require('body-parser');
+var express = require('express');
+var mongoose = require('mongoose');
+var bodyParser = require('body-parser');
+var config = require('./config');
 
-mongoose.connect('localhost:27017/hellyeahdish');
+var app = express();
+var routes = config.routes;
 
-app.use(allowCrossDomain);
+mongoose.connect(config.dbUrl + config.dbName);
 
+app.use(function (req, res, next) {
+    var headers = config.customHeaders;
+
+    Object.keys(headers).forEach(function (key) {
+        res.header(key, headers[key]);
+    });
+
+    next();
+});
 app.use(bodyParser.json());
 
-app.use('/', require('./routes/user-route.js'));
+Object.keys(routes).forEach(function (key) {
+    app.use(key, require('./routes/' + routes[key]));
+});
 
-app.listen(port);
-console.log('Listening port ' + port);
-
-function allowCrossDomain (req, res, next) {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
-    next();
-}
+app.listen(config.port);
+console.log('Listening port ' + config.port);
